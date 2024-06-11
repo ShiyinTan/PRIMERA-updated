@@ -23,7 +23,7 @@ from dataloader import (
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.plugins import DDPPlugin
+# from pytorch_lightning.plugins import DDPPlugin
 from pathlib import Path
 
 
@@ -390,17 +390,17 @@ def train(args):
     # initialize trainer
     trainer = pl.Trainer(
         gpus=args.gpus,
-        track_grad_norm=-1,
+        # track_grad_norm=-1,
         max_steps=args.total_steps,
-        replace_sampler_ddp=False,
+        use_distributed_sampler=False,
         accumulate_grad_batches=args.acc_batch,
         # val_check_interval=0.5,
         check_val_every_n_epoch=1 if args.num_train_data > 100 else 5,
         logger=logger,
         log_every_n_steps=5,
         callbacks=checkpoint_callback,
-        checkpoint_callback=True,
-        progress_bar_refresh_rate=args.progress_bar_refresh_rate * args.acc_batch,
+        enable_checkpointing=True,
+        # progress_bar_refresh_rate=args.progress_bar_refresh_rate * args.acc_batch,
         precision=32,
         accelerator=args.accelerator,
     )
@@ -462,13 +462,13 @@ def test(args):
     args.compute_rouge = True
     # initialize trainer
     trainer = pl.Trainer(
-        gpus=args.gpus,
-        track_grad_norm=-1,
+        devices=args.gpus,
+        # track_grad_norm=-1,
         max_steps=args.total_steps * args.acc_batch,
-        replace_sampler_ddp=False,
+        use_distributed_sampler=False,
         log_every_n_steps=5,
-        checkpoint_callback=True,
-        progress_bar_refresh_rate=args.progress_bar_refresh_rate,
+        enable_checkpointing=True,
+        # progress_bar_refresh_rate=args.progress_bar_refresh_rate,
         precision=32,
         accelerator=args.accelerator,
         limit_test_batches=args.limit_test_batches if args.limit_test_batches else 1.0,
@@ -518,7 +518,7 @@ if __name__ == "__main__":
     # Gneral
     parser.add_argument("--gpus", default=0, type=int, help="number of gpus to use")
     parser.add_argument(
-        "--accelerator", default=None, type=str, help="Type of accelerator"
+        "--accelerator", default='gpu', type=str, help="Type of accelerator"
     )
     parser.add_argument("--mode", default="train", choices=["train", "test"])
     parser.add_argument(

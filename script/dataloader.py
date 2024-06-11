@@ -23,6 +23,7 @@ class SummarizationDataset(Dataset):
         rand_seed=1,
         is_test=False,
         dataset_type="train",
+        permute_docs=False,
     ):
         self.hf_dataset = hf_dataset
         self.dataset_name = dataset_name
@@ -30,7 +31,7 @@ class SummarizationDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_input_len = max_input_len
         self.max_output_len = max_output_len
-        if join_method == "concat_start_wdoc_global":
+        if join_method in ["concat_start_wdoc_global", "tsy_design"]:
             self.docsep_token_id = self.tokenizer.additional_special_tokens_ids[0]
         self.mask_id = self.tokenizer.mask_token_id
         self.mask_num = mask_num
@@ -38,6 +39,7 @@ class SummarizationDataset(Dataset):
             random.seed(rand_seed)
             self.hf_dataset = random.sample(list(hf_dataset), num_data)
         self.dataset_type = dataset_type
+        self.permute_docs = permute_docs
 
     def __len__(self):
         return len(self.hf_dataset)
@@ -56,9 +58,9 @@ class SummarizationDataset(Dataset):
             )
         else:  # multi-doc setting
             if self.dataset_name == "multi_news":
-                all_docs = entry["document"].split("|||||")[:-1]
+                all_docs = entry["document"].split("|||||")# [:-1]
                 for i, doc in enumerate(all_docs):
-                    doc = doc.replace("\n", " ")
+                    doc = doc.replace("\n", " ") # TODO: 查看不将\n变为" "，将其变为分割的一部分，作为子doc或者paragraph，再根据子doc进行筛选。
                     doc = " ".join(doc.split())
                     all_docs[i] = doc
                 tgt = entry["summary"]
@@ -80,6 +82,8 @@ class SummarizationDataset(Dataset):
             elif self.dataset_name == "wikisum":
                 all_docs = entry["text"]
                 tgt = entry["tgt"]
+
+
             if self.join_method == "plain_concat":
                 src = "\n".join(all_docs)
                 input_ids = self.tokenizer.encode(
@@ -133,12 +137,60 @@ class SummarizationDataset(Dataset):
                             max_length=(self.max_input_len - mask_num) // len(all_docs),
                         )[1:-1]
                     )
-                    input_ids.append(self.docsep_token_id)
+                    # input_ids.append(self.docsep_token_id)
+                    if i != len(all_docs) - 1:
+                        input_ids.append(self.docsep_token_id)
                 input_ids = (
                     [self.tokenizer.bos_token_id]
                     + input_ids
                     + [self.tokenizer.eos_token_id]
                 )
+            elif self.join_method == "tsy_design":
+                available_token_length = self.max_input_len - (len(all_docs)-1) - 2
+                input_ids_list = []
+                for doc in all_docs:
+                    # input_ids_each_doc = self.tokenizer.encode(doc)[1:-1]
+                    input_ids_each_doc = self.tokenizer(doc)['input_ids'][1:-1]
+                    num_input_ids_doc = len(input_ids_each_doc)
+                    input_ids_list.append(input_ids_each_doc)
+                    # print(len(input_ids_each_doc))
+
+                input_ids_list = sorted(input_ids_list, key=len)
+
+                avg_len_each_doc = self.max_input_len//len(all_docs)
+                final_input_ids_list = []
+                i = 0
+                while i < len(input_ids_list):
+                    input_ids_each_doc = input_ids_list[i]
+                    num_input_ids_doc = len(input_ids_each_doc)
+                    if num_input_ids_doc <= avg_len_each_doc:
+                        available_token_length -= num_input_ids_doc
+                        final_input_ids_list.append(input_ids_each_doc)
+                        # print("append: ", num_input_ids_doc, "available: ", available_token_length, "avg: ", avg_len_each_doc)
+                        i += 1
+                    else:
+                        avg_len_each_doc = available_token_length//(len(input_ids_list)-i)
+                        if num_input_ids_doc > avg_len_each_doc:
+                            available_token_length -= avg_len_each_doc
+                            final_input_ids_list.append(input_ids_each_doc[:avg_len_each_doc])
+                            # print("append: ", num_input_ids_doc, "available: ", available_token_length, "avg: ", avg_len_each_doc)
+                            i += 1
+
+                # TODO: 使用 sample 函数生成新的随机排列列表
+                if self.permute_docs and self.dataset_type=='train':
+                    final_input_ids_list = random.sample(final_input_ids_list, len(final_input_ids_list))
+
+                input_ids = []
+                for i, final_input_ids in enumerate(final_input_ids_list):
+                    input_ids.extend(final_input_ids)
+                    if i != len(final_input_ids_list) - 1:
+                        input_ids.append(self.docsep_token_id)
+
+                input_ids = ([self.tokenizer.bos_token_id]
+                            + input_ids
+                            + [self.tokenizer.eos_token_id])
+                assert len(input_ids) <= 4096, 'input_ids larger than 4096.'
+
 
             output_ids = self.tokenizer.encode(
                 tgt, truncation=True, max_length=self.max_output_len
@@ -453,7 +505,7 @@ class SummarizationIterDataset(IterableDataset):
 
 def collate_fn(batch):
     # A hack to know if this is bart or pegasus. DDP doesn't like global variables nor class-level memebr variables
-    if batch[0][0][-1].item() == 2:
+    if batch[0][0][-1].item() == 2: # eos_token_id
         pad_token_id = (
             1  # AutoTokenizer.from_pretrained('facebook/bart-base').pad_token_id
         )
@@ -472,6 +524,11 @@ def collate_fn(batch):
     input_ids = torch.nn.utils.rnn.pad_sequence(
         input_ids, batch_first=True, padding_value=pad_token_id
     )
+    if input_ids.shape[1]>4096:
+        print(input_ids.shape)
+    padding_len = (512 - input_ids.shape[1] % 512) % 512
+    input_ids = torch.nn.functional.pad(input_ids, (0, padding_len), value=pad_token_id)
+
     output_ids = torch.nn.utils.rnn.pad_sequence(
         output_ids, batch_first=True, padding_value=pad_token_id
     )
@@ -507,6 +564,7 @@ def get_dataloader_summ(
         ]
     else:
         d = hf_datasets[split_name]
+    # d = d.select(range(24)) # TODO: d变为20的样本，只用于测试
     dataset = SummarizationDataset(
         hf_dataset=d,
         dataset_name=args.dataset_name,
@@ -519,6 +577,7 @@ def get_dataloader_summ(
         rand_seed=args.rand_seed,
         is_test=(split_name == "test"),
         dataset_type=split_name,
+        permute_docs=args.permute_docs, 
     )
 
     return DataLoader(
