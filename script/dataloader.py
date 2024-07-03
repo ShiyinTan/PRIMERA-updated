@@ -1,3 +1,4 @@
+import numpy as np
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 from pathlib import Path
 import torch
@@ -7,6 +8,9 @@ import os
 from nltk.tokenize import sent_tokenize
 import re
 import sys
+import spacy
+from sentence_transformers import SentenceTransformer, util
+
 
 
 class SummarizationDataset(Dataset):
@@ -24,6 +28,8 @@ class SummarizationDataset(Dataset):
         is_test=False,
         dataset_type="train",
         permute_docs=False,
+        d_sent_score=None,
+        filter_score=0.0,
     ):
         self.hf_dataset = hf_dataset
         self.dataset_name = dataset_name
@@ -31,8 +37,11 @@ class SummarizationDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_input_len = max_input_len
         self.max_output_len = max_output_len
-        if join_method in ["concat_start_wdoc_global", "tsy_design"]:
-            self.docsep_token_id = self.tokenizer.additional_special_tokens_ids[0]
+        if join_method in ["concat_start_wdoc_global", "tsy_design", 
+                           "no_rand_sentence", "indoc_rand_sentence", "global_rand_sentence",
+                           "sim_sent_transformer", "indoc_sim_sent_transformer", "only_drop_lowsim_sent"]:
+            # self.docsep_token_id = self.tokenizer.additional_special_tokens_ids[0]
+            self.docsep_token_id = self.tokenizer.convert_tokens_to_ids("<doc-sep>")
         self.mask_id = self.tokenizer.mask_token_id
         self.mask_num = mask_num
         if num_data != -1 and not is_test and num_data < len(list(hf_dataset)):
@@ -40,6 +49,14 @@ class SummarizationDataset(Dataset):
             self.hf_dataset = random.sample(list(hf_dataset), num_data)
         self.dataset_type = dataset_type
         self.permute_docs = permute_docs
+        # # 加载英文模型，用于句子分割
+        # self.sentence_split_model = spacy.load("en_core_web_lg")
+        # self.sentence_split_model.disable_pipe("parser")
+        # self.sentence_split_model.enable_pipe("senter")
+        # # 加载sentence transformer，用于计算相似度
+        # self.sent_trainsformer = SentenceTransformer('all-mpnet-base-v2')
+        self.d_sent_score = d_sent_score
+        self.filter_score = filter_score # will filter out sentence which similarity less than filter_score
 
     def __len__(self):
         return len(self.hf_dataset)
@@ -58,11 +75,16 @@ class SummarizationDataset(Dataset):
             )
         else:  # multi-doc setting
             if self.dataset_name == "multi_news":
-                all_docs = entry["document"].split("|||||")# [:-1]
-                for i, doc in enumerate(all_docs):
-                    doc = doc.replace("\n", " ") # TODO: 查看不将\n变为" "，将其变为分割的一部分，作为子doc或者paragraph，再根据子doc进行筛选。
-                    doc = " ".join(doc.split())
-                    all_docs[i] = doc
+                if self.join_method in ["no_rand_sentence", "indoc_rand_sentence", "global_rand_sentence", 
+                                        "sim_sent_transformer", "indoc_sim_sent_transformer", 
+                                        "only_drop_lowsim_sent"]:
+                    all_docs = entry["document"]
+                else:
+                    all_docs = entry["document"].split("|||||")# [:-1]
+                    for i, doc in enumerate(all_docs):
+                        doc = doc.replace("\n", " ") # TODO: 查看不将\n变为" "，将其变为分割的一部分，作为子doc或者paragraph，再根据子doc进行筛选。
+                        doc = " ".join(doc.split())
+                        all_docs[i] = doc
                 tgt = entry["summary"]
             elif self.dataset_name == "multi_x_science_sum":
                 all_docs = [entry["abstract"]]
@@ -129,7 +151,7 @@ class SummarizationDataset(Dataset):
                 mask_num = self.mask_num
 
                 input_ids = [self.mask_id] * mask_num if mask_num > 0 else []
-                for doc in all_docs:
+                for i, doc in enumerate(all_docs):
                     input_ids.extend(
                         self.tokenizer.encode(
                             doc,
@@ -140,6 +162,212 @@ class SummarizationDataset(Dataset):
                     # input_ids.append(self.docsep_token_id)
                     if i != len(all_docs) - 1:
                         input_ids.append(self.docsep_token_id)
+                input_ids = (
+                    [self.tokenizer.bos_token_id]
+                    + input_ids
+                    + [self.tokenizer.eos_token_id]
+                )
+            # no permute sentences
+            elif self.join_method == "no_rand_sentence":
+                mask_num = self.mask_num
+                input_ids = [self.mask_id] * mask_num if mask_num > 0 else []
+                
+                all_sentences = []
+                for i, doc_id in enumerate(all_docs.keys()):
+                    doc_sentences = all_docs[doc_id]
+                    for sentence in doc_sentences:
+                        input_ids.extend(
+                            self.tokenizer.encode(
+                                sentence,
+                                truncation=True,
+                                max_length=(self.max_input_len - mask_num),
+                            )[1:-1]
+                        )
+                    if i != len(all_docs) - 1:
+                        input_ids.append(self.docsep_token_id)
+                input_ids = input_ids[:(self.max_input_len-2)]
+                input_ids = (
+                    [self.tokenizer.bos_token_id]
+                    + input_ids
+                    + [self.tokenizer.eos_token_id]
+                )
+            # in document permute sentences
+            elif self.join_method == "indoc_rand_sentence":
+                mask_num = self.mask_num
+                input_ids = [self.mask_id] * mask_num if mask_num > 0 else []
+                
+                all_sentences = []
+                for i, doc_id in enumerate(all_docs.keys()):
+                    doc_sentences = all_docs[doc_id]
+                    doc_sentences = random.sample(doc_sentences, len(doc_sentences))
+                    for sentence in doc_sentences:
+                        input_ids.extend(
+                            self.tokenizer.encode(
+                                sentence,
+                                truncation=True,
+                                max_length=(self.max_input_len - mask_num),
+                            )[1:-1]
+                        )
+                    if i != len(all_docs) - 1:
+                        input_ids.append(self.docsep_token_id)
+                input_ids = input_ids[:(self.max_input_len-2)]
+                input_ids = (
+                    [self.tokenizer.bos_token_id]
+                    + input_ids
+                    + [self.tokenizer.eos_token_id]
+                )
+            # random permute the sentences, without docsep_token_id: cross document sentences permutation
+            elif self.join_method == "global_rand_sentence":
+                mask_num = self.mask_num
+                input_ids = [self.mask_id] * mask_num if mask_num > 0 else []
+                
+                all_sentences = []
+                for doc_id in all_docs.keys():
+                    doc_sentences = all_docs[doc_id]
+                    all_sentences.extend(doc_sentences)
+                all_sentences = random.sample(all_sentences, len(all_sentences))
+                for sentence in all_sentences:
+                    input_ids.extend(
+                        self.tokenizer.encode(
+                            sentence,
+                            truncation=True,
+                            max_length=(self.max_input_len - mask_num),
+                        )[1:-1]
+                    )
+                input_ids.append(self.docsep_token_id)
+                input_ids = input_ids[:(self.max_input_len-2)]
+                input_ids = (
+                    [self.tokenizer.bos_token_id]
+                    + input_ids
+                    + [self.tokenizer.eos_token_id]
+                )
+            # drop low similarity sentence, no rerank
+            elif self.join_method == "only_drop_lowsim_sent":
+                all_doc_similarities = self.d_sent_score[idx]
+                mask_num = self.mask_num
+                input_ids = [self.mask_id] * mask_num if mask_num > 0 else []
+                
+                all_sentences = []
+                for i, doc_id in enumerate(all_docs.keys()):
+                    doc_sentences = all_docs[doc_id]
+                    doc_similarities = all_doc_similarities[doc_id]
+                    for sent_index in range(len(doc_sentences)):
+                        if doc_similarities[sent_index] > self.filter_score:
+                            sentence = doc_sentences[sent_index]
+                            input_ids.extend(
+                                self.tokenizer.encode(
+                                    sentence,
+                                    truncation=True,
+                                    max_length=(self.max_input_len - mask_num),
+                                )[1:-1]
+                            )
+                    if i != len(all_docs) - 1:
+                        input_ids.append(self.docsep_token_id)
+                
+                input_ids = input_ids[:(self.max_input_len-2)] # truncation
+                input_ids = (
+                    [self.tokenizer.bos_token_id]
+                    + input_ids
+                    + [self.tokenizer.eos_token_id]
+                )
+            # most similar sentences on forward
+            elif self.join_method == "sim_sent_transformer":
+                all_doc_similarities = self.d_sent_score[idx]
+                mask_num = self.mask_num
+                input_ids = [self.mask_id] * mask_num if mask_num > 0 else []
+                
+                all_sentences = []
+                all_similarities = []
+                for doc_id in all_docs.keys():
+                    doc_sentences = all_docs[doc_id]
+                    all_sentences.extend(doc_sentences)
+                    doc_similarities = all_doc_similarities[doc_id]
+                    all_similarities.extend(doc_similarities)
+                
+                # rearange sentences based on the similarity
+                sorted_index = np.argsort(all_similarities)[::-1]
+
+                for sent_index in sorted_index:
+                    if all_similarities[sent_index] > self.filter_score:
+                        sentence = all_sentences[sent_index]
+                        input_ids.extend(
+                            self.tokenizer.encode(
+                                sentence,
+                                truncation=True,
+                                max_length=(self.max_input_len - mask_num),
+                            )[1:-1]
+                        )
+                input_ids.append(self.docsep_token_id)
+                input_ids = input_ids[:(self.max_input_len-2)]
+                input_ids = (
+                    [self.tokenizer.bos_token_id]
+                    + input_ids
+                    + [self.tokenizer.eos_token_id]
+                )
+            elif self.join_method == "indoc_sim_sent_transformer":
+                all_doc_similarities = self.d_sent_score[idx]
+                mask_num = self.mask_num
+                input_ids = [self.mask_id] * mask_num if mask_num > 0 else []
+                
+                all_sentences = []
+                for i, doc_id in enumerate(all_docs.keys()):
+                    doc_sentences = all_docs[doc_id]
+                    doc_similarities = all_doc_similarities[doc_id]
+                    doc_sorted_index = np.argsort(doc_similarities)[::-1]
+                    for sent_index in doc_sorted_index:
+                        if doc_similarities[sent_index] > self.filter_score:
+                            sentence = doc_sentences[sent_index]
+                            input_ids.extend(
+                                self.tokenizer.encode(
+                                    sentence,
+                                    truncation=True,
+                                    max_length=(self.max_input_len - mask_num),
+                                )[1:-1]
+                            )
+                    if i != len(all_docs) - 1:
+                        input_ids.append(self.docsep_token_id)
+                
+                input_ids = input_ids[:(self.max_input_len-2)] # truncation
+                input_ids = (
+                    [self.tokenizer.bos_token_id]
+                    + input_ids
+                    + [self.tokenizer.eos_token_id]
+                )
+            # indoc similarity and indoc truncation
+            # filter out sentence similarity less than 0.3
+            # then truncate each documents to fit the limitation of 4096
+            # TODO: this part not finished yet
+            elif self.join_method == "indoc_sim_sent_transformer_truncation":
+                all_doc_similarities = self.d_sent_score[idx]
+                mask_num = self.mask_num
+                input_ids = [self.mask_id] * mask_num if mask_num > 0 else []
+                
+                all_sentences = []
+                for i, doc_id in enumerate(all_docs.keys()):
+                    all_sentences.extend(all_docs[doc_id])
+                
+                suppose_inputs_id_length = len(self.tokenizer.encode(" ".join(all_sentences)))
+                suppose_truncate_length = suppose_inputs_id_length - self.max_input_len
+                
+                all_similarities = []
+                for i, doc_id in enumerate(all_docs.keys()):
+                    doc_sentences = all_docs[doc_id]
+                    doc_similarities = all_doc_similarities[doc_id]
+                    doc_sorted_index = np.argsort(doc_similarities)[::-1]
+                    for sent_index in doc_sorted_index:
+                        if doc_similarities[sent_index] > self.filter_score:
+                            sentence = doc_sentences[sent_index]
+                            input_ids.extend(
+                                self.tokenizer.encode(
+                                    sentence,
+                                    truncation=True,
+                                    max_length=(self.max_input_len - mask_num),
+                                )[1:-1]
+                            )
+                    if i != len(all_docs) - 1:
+                        input_ids.append(self.docsep_token_id)
+                
+                input_ids = input_ids[:(self.max_input_len-2)] # truncation
                 input_ids = (
                     [self.tokenizer.bos_token_id]
                     + input_ids
@@ -539,7 +767,7 @@ def collate_fn(batch):
 
 
 def get_dataloader_summ(
-    args, hf_datasets, tokenizer, split_name, num_workers, is_train
+    args, hf_datasets, tokenizer, split_name, num_workers, is_train, sentence_scores=None
 ):
     if (
         ("duc" in args.dataset_name)
@@ -564,6 +792,10 @@ def get_dataloader_summ(
         ]
     else:
         d = hf_datasets[split_name]
+    if sentence_scores != None:
+        d_sent_score = sentence_scores[split_name]
+    else:
+        d_sent_score = None
     # d = d.select(range(24)) # TODO: d变为20的样本，只用于测试
     dataset = SummarizationDataset(
         hf_dataset=d,
@@ -578,6 +810,8 @@ def get_dataloader_summ(
         is_test=(split_name == "test"),
         dataset_type=split_name,
         permute_docs=args.permute_docs, 
+        d_sent_score=d_sent_score,
+        filter_score=args.filter_score,
     )
 
     return DataLoader(

@@ -509,7 +509,7 @@ def train(args):
         enable_checkpointing=True,
         # progress_bar_refresh_rate=args.progress_bar_refresh_rate * args.acc_batch,
         enable_progress_bar=True,
-        precision='16', # 32
+        precision='16-mixed', # 32
         accelerator=args.accelerator,
         strategy = args.strategy, 
         # deterministic=True, # ensure full reproducibility
@@ -519,17 +519,37 @@ def train(args):
 
     # load datasets
     if args.dataset_name in ["multi_news", "multi_x_science_sum"]:
-
-        hf_datasets = load_dataset(args.dataset_name, cache_dir=args.data_path)
-        train_dataloader = get_dataloader_summ(
-            args, hf_datasets, model.tokenizer, "train", args.num_workers, True
-        )
-        valid_dataloader = get_dataloader_summ(
-            args, hf_datasets, model.tokenizer, "validation", args.num_workers, False
-        )
-        test_dataloader = get_dataloader_summ(
-            args, hf_datasets, model.tokenizer, "test", args.num_workers, False
-        )
+        if args.join_method in ["no_rand_sentence", "indoc_rand_sentence", "global_rand_sentence", 
+                                "sim_sent_transformer", "indoc_sim_sent_transformer", 
+                                "only_drop_lowsim_sent"]:
+            with open('../dataset/my_processed_dataset/multi_news_sentence_dataset.json', 'r') as json_file:
+                sentence_datasets = json.load(json_file)
+            if args.sent_sim_type == "sent_transformer":
+                with open('../dataset/my_processed_dataset/multi_news_sentence_similarity_SentTransformer.json', 'r') as json_file:
+                    sentence_scores = json.load(json_file)
+            train_dataloader = get_dataloader_summ(
+                args, sentence_datasets, model.tokenizer, "train", args.num_workers, True, 
+                sentence_scores = sentence_scores
+            )
+            valid_dataloader = get_dataloader_summ(
+                args, sentence_datasets, model.tokenizer, "validation", args.num_workers, False, 
+                sentence_scores = sentence_scores
+            )
+            test_dataloader = get_dataloader_summ(
+                args, sentence_datasets, model.tokenizer, "test", args.num_workers, False, 
+                sentence_scores = sentence_scores
+            )
+        else:
+            hf_datasets = load_dataset(args.dataset_name, cache_dir=args.data_path)
+            train_dataloader = get_dataloader_summ(
+                args, hf_datasets, model.tokenizer, "train", args.num_workers, True
+            )
+            valid_dataloader = get_dataloader_summ(
+                args, hf_datasets, model.tokenizer, "validation", args.num_workers, False
+            )
+            test_dataloader = get_dataloader_summ(
+                args, hf_datasets, model.tokenizer, "test", args.num_workers, False
+            )
     elif (
         ("duc" in args.dataset_name)
         or ("tac" in args.dataset_name)
@@ -571,9 +591,9 @@ def train(args):
     # pdb.set_trace()
     # TODO: use test for valid
     # trainer.fit(model, train_dataloader, valid_dataloader)
-    # trainer.fit(model, train_dataloader, test_dataloader)
-    trainer.fit(model, train_dataloader, test_dataloader, 
-                ckpt_path="run_saves/tsy_join_method_train_5/summ_checkpoints/step=37949-vloss=2.15-avgr=0.3200.ckpt")
+    trainer.fit(model, train_dataloader, test_dataloader)
+    # trainer.fit(model, train_dataloader, test_dataloader, 
+    #             ckpt_path="run_saves/tsy_join_method_train_5/summ_checkpoints/step=37949-vloss=2.15-avgr=0.3200.ckpt")
     if args.test_imediate:
         args.resume_ckpt = checkpoint_callback.best_model_path
         print(args.resume_ckpt)
@@ -598,7 +618,7 @@ def test(args):
         # progress_bar_refresh_rate=args.progress_bar_refresh_rate,
         callbacks=[tqdm_progbar_callback],
         enable_progress_bar=True,
-        precision='32', # 32
+        precision='16-mixed', # 32
         accelerator=args.accelerator,
         strategy=args.strategy, 
         # limit_test_batches=args.limit_test_batches if args.limit_test_batches else 1.0,
@@ -612,11 +632,23 @@ def test(args):
 
     # load dataset
     if args.dataset_name in ["multi_news", "multi_x_science_sum"]:
-
-        hf_datasets = load_dataset(args.dataset_name, cache_dir=args.data_path)
-        test_dataloader = get_dataloader_summ(
-            args, hf_datasets, model.tokenizer, "test", 0, False
-        )
+        if args.join_method in ["no_rand_sentence", "indoc_rand_sentence", "global_rand_sentence", 
+                                "sim_sent_transformer", "indoc_sim_sent_transformer", 
+                                "only_drop_lowsim_sent"]:
+            with open('../dataset/my_processed_dataset/multi_news_sentence_dataset.json', 'r') as json_file:
+                sentence_datasets = json.load(json_file)
+            if args.sent_sim_type == "sent_transformer":
+                with open('../dataset/my_processed_dataset/multi_news_sentence_similarity_SentTransformer.json', 'r') as json_file:
+                    sentence_scores = json.load(json_file)
+            test_dataloader = get_dataloader_summ(
+                args, sentence_datasets, model.tokenizer, "test", args.num_workers, False, 
+                sentence_scores = sentence_scores
+            )
+        else:
+            hf_datasets = load_dataset(args.dataset_name, cache_dir=args.data_path)
+            test_dataloader = get_dataloader_summ(
+                args, hf_datasets, model.tokenizer, "test", 0, False
+            )
     elif (
         ("duc" in args.dataset_name)
         or ("tac" in args.dataset_name)
@@ -722,6 +754,8 @@ if __name__ == "__main__":
     ########################
     # TSY added
     parser.add_argument("--permute_docs", type=str_to_bool, default=False)
+    parser.add_argument("--sent_sim_type", type=str, default="sent_transformer") # 
+    parser.add_argument("--filter_score", type=float, default=0.0)
 
     ########################
     # For training
@@ -731,12 +765,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--limit_valid_batches", type=int, default=None,
     )
-    parser.add_argument("--lr", type=float, default=1e-5, help="Maximum learning rate") # 3e-5
+    parser.add_argument("--lr", type=float, default=2e-5, help="Maximum learning rate") # 3e-5
     parser.add_argument(
         "--warmup_steps", type=int, default=1000, help="Number of warmup steps"
     )
     parser.add_argument(
-        "--accum_data_per_step", type=int, default=-1, help="Number of data per step" # 16
+        "--accum_data_per_step", type=int, default=16, help="Number of data per step" # 16
     )
     parser.add_argument(
         "--total_steps", type=int, default=1000000, help="Number of steps to train" # 50000
@@ -805,8 +839,10 @@ if __name__ == "__main__":
     # if args.strategy == "ddp":
     #     args.devices = 4
     
-    if args.primer_path in ["allenai/PRIMERA-multinews"]:
-        args.resume_ckpt = None
+    print(f"Current sent_sim_type: {args.sent_sim_type}")
+
+    # if args.primer_path in ["allenai/PRIMERA-multinews"]:
+    #     args.resume_ckpt = None
 
     print(args)
     with open(

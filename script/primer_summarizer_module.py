@@ -73,7 +73,10 @@ class PRIMERSummarizer(pl.LightningModule):
 
         global_attention_mask[:, 0] = 1
         # if self.args.join_method == "concat_start_wdoc_global":
-        if self.args.join_method in ["concat_start_wdoc_global", "tsy_design"]: # TODO: par_id:5 
+        if self.args.join_method in ["concat_start_wdoc_global", "tsy_design", 
+                                     "no_rand_sentence", "indoc_rand_sentence", "global_rand_sentence",
+                                     "sim_sent_transformer", "indoc_sim_sent_transformer", 
+                                     "only_drop_lowsim_sent"]: # TODO: par_id:5 
             global_attention_mask[input_ids == self.docsep_token_id] = 1
         outputs = self.model(
             input_ids,
@@ -167,7 +170,10 @@ class PRIMERSummarizer(pl.LightningModule):
 
         global_attention_mask[:, 0] = 1
         # if self.args.join_method == "concat_start_wdoc_global":
-        if self.args.join_method in ["concat_start_wdoc_global", "tsy_design"]: # TODO: par_id:5 
+        if self.args.join_method in ["concat_start_wdoc_global", "tsy_design", 
+                                     "no_rand_sentence", "indoc_rand_sentence", "global_rand_sentence", 
+                                     "sim_sent_transformer", "indoc_sim_sent_transformer", 
+                                     "only_drop_lowsim_sent"]: # TODO: par_id:5 
             global_attention_mask[input_ids == self.docsep_token_id] = 1
         generated_ids = self.model.generate(
             input_ids=input_ids,

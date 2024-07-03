@@ -1,6 +1,7 @@
 # %%
 import argparse
 import random
+from tqdm import tqdm
 from transformers import (
     AutoTokenizer,
     LEDForConditionalGeneration,
@@ -60,7 +61,7 @@ if args.original:
     primer_model_lighting = PRIMERSummarizer(args=args) # original primer
     print("original model")
 else:
-    checkpoint_path = './script/run_saves/tsy_join_method_train_3/summ_checkpoints/step=19677-vloss=1.88-avgr=0.3152.ckpt'
+    checkpoint_path = './script/run_saves/tsy_join_method_train_5/summ_checkpoints/step=5622-vloss=1.96-avgr=0.3212.ckpt'
     primer_model_lighting = PRIMERSummarizer.load_from_checkpoint(checkpoint_path = checkpoint_path, args=args)
     print("checkpoint_path: ", checkpoint_path)
 TOKENIZER = primer_model_lighting.tokenizer
@@ -214,7 +215,44 @@ if args.permute_docs:
 par_str = par_str+f"beam_{args.beam}_{args.par_id}"
 
 
-result_all = dataset_small.map(lambda d: batch_process(d, tsy=args.tsy, permute_docs=args.permute_docs), batched=True, batch_size=2)
+## 测试两种方式的结果差异
+# result_all = dataset_small.map(lambda d: batch_process(d, tsy=args.tsy, permute_docs=args.permute_docs), batched=True, batch_size=2)
+
+
+
+# print(dataset['test'][0])
+# print(process_document([dataset['test'][0]['document']]).shape)
+# ## 
+result_all = {}
+result_all['generated_summaries'] = []
+result_all['gt_summaries'] = []
+for idx in tqdm(range(len(dataset['test']))):
+# for idx in tqdm(range(10)):
+    batch = dataset['test'][idx]
+    input_ids = process_document([batch['document']]).cuda()
+
+    global_attention_mask = torch.zeros_like(input_ids).to(input_ids.device).cuda()
+    global_attention_mask[:, 0] = 1
+    global_attention_mask[input_ids == DOCSEP_TOKEN_ID] = 1
+    generated_ids = MODEL.generate(
+        input_ids=input_ids,
+        global_attention_mask=global_attention_mask,
+        use_cache=True,
+        max_length=1024,
+        num_beams=args.beam,
+    )
+    generated_str = TOKENIZER.batch_decode(
+            generated_ids.tolist(), skip_special_tokens=True
+        )
+    result={}
+    result['generated_summaries'] = generated_str[0]
+    result['gt_summaries']=batch['summary']
+
+    result_all['generated_summaries'].append(result['generated_summaries'])
+    result_all['gt_summaries'].append(result['gt_summaries'])
+
+
+
 with open(f"test_hf_save/generated_summaries_{par_str}.txt", 'w') as wf1, open(f"test_hf_save/gt_summaries_{par_str}.txt", 'w') as wf2: 
     for generated_summary in result_all['generated_summaries']:
         wf1.write(generated_summary + '\n')
