@@ -76,7 +76,8 @@ class PRIMERSummarizer(pl.LightningModule):
         if self.args.join_method in ["concat_start_wdoc_global", "tsy_design", 
                                      "no_rand_sentence", "indoc_rand_sentence", "global_rand_sentence",
                                      "sim_sent_transformer", "indoc_sim_sent_transformer", 
-                                     "only_drop_lowsim_sent"]: # TODO: par_id:5 
+                                     "only_drop_lowsim_sent", "multi_doc_rag", "original_rank", 
+                                     "truncate_last_rank", "truncate_last"]: # TODO: par_id:5 
             global_attention_mask[input_ids == self.docsep_token_id] = 1
         outputs = self.model(
             input_ids,
@@ -115,7 +116,9 @@ class PRIMERSummarizer(pl.LightningModule):
     # TODO: currently batch only contain input_ids, out_put_ids or tgt, need to contain attention mask
     def shared_step(self, input_ids, output_ids):
         lm_logits = self.forward(input_ids, output_ids)
+        # print(f"lm_logits: {lm_logits.shape}")
         labels = output_ids[:, 1:].clone()
+        # print(f"labels: {labels.shape}")
         # pdb.set_trace()
 
         if self.args.label_smoothing == 0:
@@ -132,6 +135,16 @@ class PRIMERSummarizer(pl.LightningModule):
             )
         if torch.isnan(loss):
             pdb.set_trace()
+
+        # print_logs = {
+        #     "loss": loss,
+        #     "max_input_size": input_ids.numel(),
+        #     "output_size": output_ids.numel(),
+        #     "mem": torch.cuda.memory_allocated(loss.device) / 1024 ** 3
+        #     if torch.cuda.is_available()
+        #     else 0,
+        # }
+        # self.log_dict(print_logs, on_step=True, prog_bar=True)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -157,6 +170,7 @@ class PRIMERSummarizer(pl.LightningModule):
             else 0,
         }
         self.logger.log_metrics(tensorboard_logs, step=self.global_step)
+        # self.log_dict(tensorboard_logs, step=self.global_step, prog_bar=True)
         # pdb.set_trace()
         return loss
 
@@ -173,7 +187,8 @@ class PRIMERSummarizer(pl.LightningModule):
         if self.args.join_method in ["concat_start_wdoc_global", "tsy_design", 
                                      "no_rand_sentence", "indoc_rand_sentence", "global_rand_sentence", 
                                      "sim_sent_transformer", "indoc_sim_sent_transformer", 
-                                     "only_drop_lowsim_sent"]: # TODO: par_id:5 
+                                     "only_drop_lowsim_sent", "multi_doc_rag", "original_rank", 
+                                     "truncate_last_rank", "truncate_last"]: # TODO: par_id:5 
             global_attention_mask[input_ids == self.docsep_token_id] = 1
         generated_ids = self.model.generate(
             input_ids=input_ids,
@@ -394,6 +409,7 @@ class PRIMERSummarizer(pl.LightningModule):
             names = ["vloss"] + names
             logs = dict(zip(*[names, metrics]))
             self.logger.log_metrics(logs, step=self.global_step)
+            # self.log_dict(tensorboard_logs, step=self.global_step, prog_bar=True)
             self.log("avgr", avgr)
             self.validation_step_outputs.clear()
             return {
