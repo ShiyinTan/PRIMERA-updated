@@ -1,3 +1,4 @@
+# train test rank
 if [ "$#" -ge 1 ]; then
     mode="$1"
 else
@@ -17,11 +18,20 @@ else
     par_id="0"
 fi
 
+# arxiv, multi_news, multi_x_science_sum, wcep, wikisum
 if [ "$#" -ge 4 ]; then
-    permute_docs="$4"
+    dataset_name="$4" 
 else
-    permute_docs='False'
+    dataset_name="multi_news"
 fi
+
+if [ "$#" -ge 5 ]; then
+    model_name="$5"
+else
+    model_name='primer'
+fi
+
+par_id="${dataset_name}_${model_name}_${par_id}"
 
 output_file="primer-${mode}_${par_id}.out"
 
@@ -49,6 +59,10 @@ echo "$model_path on $host_name at $current_time. " > $output_file
 ## sim_sent_transformer
 ## indoc_sim_sent_transformer
 ## only_drop_lowsim_sent
+## original_rank
+## truncate_last
+## truncate_last_rank
+## multi_doc_rag
 if [ $mode = "test" ]; then
     # resume_ckpt="./run_saves/tsy_join_method_train_5/summ_checkpoints/step=5622-vloss=1.96-avgr=0.3212.ckpt"
     # resume_ckpt="./run_saves/tsy_join_method_train_only_drop_lowsim_sent_0.3/summ_checkpoints/step=5622-vloss=2.02-avgr=0.3190.ckpt"
@@ -61,13 +75,16 @@ if [ $mode = "test" ]; then
     # --resume_ckpt ${resume_ckpt} \
     CUDA_VISIBLE_DEVICES=${gpu} nohup python primer_hf_main_modify.py --mode ${mode} \
                 --model_path ${model_path} --beam_size 5 --batch_size 1 --strategy auto \
-                --permute_docs ${permute_docs} --join_method global_rand_sentence \
-                --filter_score 0.0 --resume_ckpt ${resume_ckpt} >> $output_file 2>&1 &
-else
+                --model_name ${model_name} --join_method global_rand_sentence \
+                --dataset_name ${dataset_name} --filter_score 0.0 --resume_ckpt ${resume_ckpt} >> $output_file 2>&1 &
+elif [ $mode = "train" ]; then
+    # resume_ckpt="./run_saves/tsy_join_method_train_wcep_default/summ_checkpoints/step=127-vloss=1.57-avgr=0.2709.ckpt"
     CUDA_VISIBLE_DEVICES=${gpu} nohup python primer_hf_main_modify.py --mode ${mode} \
-                --model_path ${model_path} --beam_size 5 --batch_size 16 --strategy auto \
-                --permute_docs ${permute_docs} --join_method only_drop_lowsim_sent \
-                --filter_score 0.3 >> $output_file 2>&1 &
+                --model_path ${model_path} --beam_size 5 --batch_size 2 --strategy auto \
+                --model_name ${model_name} --join_method truncate_last_rank \
+                --dataset_name ${dataset_name} --filter_score 0.0 >> $output_file 2>&1 &
+else
+    echo "wrong mode ${mode} inputed. "
 fi
 
 
